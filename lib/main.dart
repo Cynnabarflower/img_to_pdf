@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:excel/excel.dart';
@@ -6,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:image/image.dart' as imglib;
 
 void main() {
   runApp(const MyApp());
@@ -76,7 +78,7 @@ class _MyHomePageState extends State<MyHomePage> {
                                 : e.error == null
                                     ? Colors.white
                                     : Colors.redAccent.withOpacity(0.3),
-                            subtitle: Text(e.error ?? ''),
+                            subtitle: Text(e.error ?? e.message ?? ''),
                           ),
                         )
                       ],
@@ -120,8 +122,37 @@ class _MyHomePageState extends State<MyHomePage> {
     );
   }
 
+  Future<pw.Document> _createDocument(
+      Iterable<File> images, double imageScale, double compression) async {
+    final pdf = pw.Document();
+    for (final image in images) {
+      Future<pw.Page> _imagePage() async {
+        final im = await imglib.decodeJpg(image.readAsBytesSync());
+        return pw.Page(
+          build: (pw.Context context) {
+            return pw.Image(
+              pw.MemoryImage(
+                imglib.encodeJpg(im!, quality: (100 * compression).floor()),
+              ),
+              width: im.width.toDouble(),
+              height: im.height.toDouble(),
+            ); // Center
+          },
+          pageFormat: PdfPageFormat(
+            im!.width.toDouble(),
+            im.height.toDouble(),
+          ),
+        );
+      }
+
+      pdf.addPage(await _imagePage());
+    }
+    return pdf;
+  }
+
   Future<void> process() async {
     for (final param in params) {
+      param.error = null;
       try {
         final dir = Directory(param.dir);
         List<File> images = [];
@@ -137,33 +168,55 @@ class _MyHomePageState extends State<MyHomePage> {
             }
           }
         });
-        final pdf = pw.Document();
-        final imageWidgets = images.map(
-              (e) => pw.Image(
-            pw.MemoryImage(
-              e.readAsBytesSync(),
-            ),
-            width: 500 * param.imageScale,
-            dpi: 500 * param.compression,
-          ),
-        ).toList();
-        imageWidgets.forEach((element) {
-          pdf.addPage(
-            pw.Page(
-                build: (pw.Context context) {
-              return element; // Center
-            }),
-          );
-        });
 
+        int docIndex = 0;
+        int totalImages = images.length;
+        setState(() {
+          param.message = 'Загрузка ${totalImages} jpg изображений...';
+        });
+        await Future.delayed(Duration(milliseconds: 100));
+        while (images.isNotEmpty) {
+          int n = min(5, images.length);
+          pw.Document doc = await _createDocument(
+              images.take(n), param.imageScale, param.compression);
+          var bytes = await doc.save();
+          if (bytes.length < 1000000) {
+            n = min(10, images.length);
+            doc = await _createDocument(
+                images.take(n), param.imageScale, param.compression);
+            bytes = await doc.save();
+          }
+          while (bytes.length > 1000000 && n > 0) {
+            n--;
+            doc = await _createDocument(
+                images.take(n), param.imageScale, param.compression);
+            bytes = await doc.save();
+          }
+          images = images.sublist(n);
+          setState(() {
+            param.message =
+                'Осталось ${images.length}/$totalImages jpg изображений...';
+          });
+          await Future.delayed(Duration(milliseconds: 100));
+
+          File('${param.savePath}/${param.filename}${docIndex > 0 ? '_$docIndex' : ''}.pdf')
+              .writeAsBytesSync(bytes);
+          docIndex++;
+        }
+
+        if (!Directory(param.savePath).existsSync()) {
+          Directory(param.savePath).createSync(recursive: true);
+        }
+
+        if (param.savePath2 != null &&
+            !Directory(param.savePath2!).existsSync()) {
+          Directory(param.savePath2!).createSync(recursive: true);
+        }
 
         otherFiles.forEach((other) {
           other.copySync(
               '${(param.savePath2 ?? param.savePath)}/${other.path.replaceAll('\\', '/').split('/').last}');
         });
-
-        File('${param.savePath}/${param.filename}')
-            .writeAsBytesSync(await pdf.save());
         param.error = 'done';
       } catch (e) {
         param.error = e.toString();
@@ -187,8 +240,9 @@ class _MyHomePageState extends State<MyHomePage> {
         final fileName = row[1]?.value.toString();
         final compressionString = row[2]?.value.toString();
         final savePath = row[3]?.value.toString();
-        final savePath2 = row[4]?.value.toString();
-        final imageScaleString = row[5]?.value.toString();
+        final savePath2 = row.length >= 4 ? row[4]?.value.toString() : null;
+        final imageScaleString =
+            row.length >= 5 ? row[5]?.value.toString() : null;
         if (dir == null || fileName == null || savePath == null) {
           continue;
         }
@@ -228,6 +282,7 @@ class Params {
   String savePath;
   String? savePath2;
   String? error;
+  String? message;
   double imageScale;
 
   Params({
@@ -242,9 +297,7 @@ class Params {
     this.savePath = savePath.replaceAll('\\', '/');
     this.savePath2 = savePath2?.replaceAll('\\', '/');
     if (filename.contains('.pdf')) {
-      this.filename = filename;
-    } else {
-      this.filename += '.pdf';
+      filename = filename.replaceAll('.pdf', '');
     }
   }
 

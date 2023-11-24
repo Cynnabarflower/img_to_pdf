@@ -34,6 +34,7 @@ dependencies:
   excel: ^3.0.0
   file_picker:
   pdf: ^3.10.6
+  image:
 
 
   # The following adds the Cupertino Icons font to your application.
