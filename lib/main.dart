@@ -169,12 +169,21 @@ class _MyHomePageState extends State<MyHomePage> {
           }
         });
 
+        if (!Directory(param.savePath).existsSync()) {
+          Directory(param.savePath).createSync(recursive: true);
+        }
+
+        if (param.savePath2 != null &&
+            !Directory(param.savePath2!).existsSync()) {
+          Directory(param.savePath2!).createSync(recursive: true);
+        }
+
         int docIndex = 0;
         int totalImages = images.length;
         setState(() {
           param.message = 'Загрузка ${totalImages} jpg изображений...';
         });
-        await Future.delayed(Duration(milliseconds: 100));
+        await Future.delayed(Duration(milliseconds: 50));
         while (images.isNotEmpty) {
           int n = min(5, images.length);
           pw.Document doc = await _createDocument(
@@ -197,25 +206,16 @@ class _MyHomePageState extends State<MyHomePage> {
             param.message =
                 'Осталось ${images.length}/$totalImages jpg изображений...';
           });
-          await Future.delayed(Duration(milliseconds: 100));
+          await Future.delayed(Duration(milliseconds: 50));
 
-          File('${param.savePath}/${param.filename}${docIndex > 0 ? '_$docIndex' : ''}.pdf')
+          File('${param.savePath}/${param.filename}${docIndex > 0 ? '$docIndex' : ''}.pdf')
               .writeAsBytesSync(bytes);
           docIndex++;
         }
 
-        if (!Directory(param.savePath).existsSync()) {
-          Directory(param.savePath).createSync(recursive: true);
-        }
-
-        if (param.savePath2 != null &&
-            !Directory(param.savePath2!).existsSync()) {
-          Directory(param.savePath2!).createSync(recursive: true);
-        }
-
         otherFiles.forEach((other) {
           other.copySync(
-              '${(param.savePath2 ?? param.savePath)}/${other.path.replaceAll('\\', '/').split('/').last}');
+              '${param.savePath2}/${other.path.replaceAll('\\', '/').split('/').last}');
         });
         param.error = 'done';
       } catch (e) {
@@ -240,10 +240,10 @@ class _MyHomePageState extends State<MyHomePage> {
         final fileName = row[1]?.value.toString();
         final compressionString = row[2]?.value.toString();
         final savePath = row[3]?.value.toString();
-        final savePath2 = row.length >= 4 ? row[4]?.value.toString() : null;
+        final savePath2 = row[4]?.value.toString();
         final imageScaleString =
             row.length >= 5 ? row[5]?.value.toString() : null;
-        if (dir == null || fileName == null || savePath == null) {
+        if (dir == null || fileName == null || savePath == null || savePath2 == null) {
           continue;
         }
         double compression = 1.0;
@@ -280,7 +280,7 @@ class Params {
   String filename;
   double compression;
   String savePath;
-  String? savePath2;
+  String savePath2;
   String? error;
   String? message;
   double imageScale;
@@ -295,7 +295,7 @@ class Params {
   }) {
     this.dir = dir.replaceAll('\\', '/');
     this.savePath = savePath.replaceAll('\\', '/');
-    this.savePath2 = savePath2?.replaceAll('\\', '/');
+    this.savePath2 = savePath2.replaceAll('\\', '/');
     if (filename.contains('.pdf')) {
       filename = filename.replaceAll('.pdf', '');
     }
