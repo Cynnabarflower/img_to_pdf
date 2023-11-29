@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:excel/excel.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:image/image.dart' as imglib;
@@ -30,7 +31,7 @@ class MyApp extends StatelessWidget {
   }
 }
 
-List<String> excludeFiles = ['opros.jpg'];
+List<String> oprosFiles = ['opros.jpg'];
 String filename = 'images.pdf';
 String message = '';
 
@@ -98,7 +99,7 @@ class _MyHomePageState extends State<MyHomePage> {
                         return;
                       }
                       params = [];
-                      var bytes = result!.files.first.bytes!;
+                      var bytes = result.files.first.bytes!;
                       return readFile(bytes).onError((error, stackTrace) {
                         print(error);
                         print(stackTrace);
@@ -123,7 +124,7 @@ class _MyHomePageState extends State<MyHomePage> {
   }
 
   Future<pw.Document> _createDocument(
-      Iterable<File> images, double imageScale, double compression) async {
+      Iterable<File> images, double compression) async {
     final pdf = pw.Document();
     for (final image in images) {
       Future<pw.Page> _imagePage() async {
@@ -160,8 +161,14 @@ class _MyHomePageState extends State<MyHomePage> {
         await dir.list(recursive: true).forEach((element) {
           if (element is File) {
             final imagePaths = ['jpg'];
-            if (imagePaths.any((path) => element.path.endsWith(path)) &&
-                !excludeFiles.any((ex) => element.path.endsWith(ex))) {
+            if (oprosFiles.any((ex) => element.path.endsWith(ex))) {
+              if (!Directory(param.savePath2).existsSync()) {
+                Directory(param.savePath2).createSync(recursive: true);
+              }
+              element.copySync(
+                '${param.savePath2}/${element.path.replaceAll('\\', '/').split('/').last}',
+              );
+            } else if (imagePaths.any((path) => element.path.endsWith(path))) {
               images.add(element);
             } else {
               otherFiles.add(element);
@@ -173,11 +180,6 @@ class _MyHomePageState extends State<MyHomePage> {
           Directory(param.savePath).createSync(recursive: true);
         }
 
-        if (param.savePath2 != null &&
-            !Directory(param.savePath2!).existsSync()) {
-          Directory(param.savePath2!).createSync(recursive: true);
-        }
-
         int docIndex = 0;
         int totalImages = images.length;
         setState(() {
@@ -186,19 +188,17 @@ class _MyHomePageState extends State<MyHomePage> {
         await Future.delayed(Duration(milliseconds: 50));
         while (images.isNotEmpty) {
           int n = min(5, images.length);
-          pw.Document doc = await _createDocument(
-              images.take(n), param.imageScale, param.compression);
+          pw.Document doc =
+              await _createDocument(images.take(n), param.compression);
           var bytes = await doc.save();
           if (bytes.length < 1000000) {
             n = min(10, images.length);
-            doc = await _createDocument(
-                images.take(n), param.imageScale, param.compression);
+            doc = await _createDocument(images.take(n), param.compression);
             bytes = await doc.save();
           }
           while (bytes.length > 1000000 && n > 0) {
             n--;
-            doc = await _createDocument(
-                images.take(n), param.imageScale, param.compression);
+            doc = await _createDocument(images.take(n), param.compression);
             bytes = await doc.save();
           }
           images = images.sublist(n);
@@ -215,15 +215,66 @@ class _MyHomePageState extends State<MyHomePage> {
 
         otherFiles.forEach((other) {
           other.copySync(
-              '${param.savePath2}/${other.path.replaceAll('\\', '/').split('/').last}');
+            '${param.savePath}/${other.path.replaceAll('\\', '/').split('/').last}',
+          );
         });
+
+        final row = param.data;
+        if (row.length > 5) {
+          bool createNSi = row[5]?.value.toString() == '1';
+          if (createNSi) {
+            await processNsi(row, param.savePath);
+          }
+        }
+
         param.error = 'done';
-      } catch (e) {
+      } catch (e, s) {
         param.error = e.toString();
+        print(e);
+        print(s);
       }
       setState(() {});
     }
     setState(() {});
+  }
+
+  Future<void> processNsi(List<Data?> row, String savePath) async {
+    final nsiTemplate = Excel.decodeBytes(
+        (await rootBundle.load('assets/NSI_template.xlsx'))
+            .buffer
+            .asUint8List());
+    int rowIndex = 0;
+    final sheet = nsiTemplate.tables.values.first;
+    for (final nsiRow in nsiTemplate.tables.values.first.rows) {
+      if (nsiRow.isNotEmpty && nsiRow.first?.value.toString() == '\$') {
+        for (int x = 0; x < row.length - 6; x++) {
+          var val = row[x + 6]?.value;
+          if (val is SharedString) {
+            val = SharedString(node: val.node.copy());
+          } else {
+            print(val.runtimeType);
+          }
+          // if (nsiRow[x] != null) {
+          //   nsiRow[x]!.value = val;
+          // } else {
+          //   nsiRow.add(Data.newData(sheet, rowIndex, x)..value = val);
+          // }
+          sheet.updateCell(
+            CellIndex.indexByColumnRow(columnIndex: x, rowIndex: rowIndex),
+            val,
+            cellStyle: row[x + 6]?.cellStyle,
+          );
+          // nsiRow[x] = row[x + 6]?.value;
+        }
+        break;
+      }
+      rowIndex++;
+    }
+
+    var fileBytes = nsiTemplate.save()!;
+    File('$savePath/NSI.xlsx')
+      ..createSync(recursive: true)
+      ..writeAsBytesSync(fileBytes);
   }
 
   Future<void> readFile(Uint8List bytes) async {
@@ -241,9 +292,11 @@ class _MyHomePageState extends State<MyHomePage> {
         final compressionString = row[2]?.value.toString();
         final savePath = row[3]?.value.toString();
         final savePath2 = row[4]?.value.toString();
-        final imageScaleString =
-            row.length >= 5 ? row[5]?.value.toString() : null;
-        if (dir == null || fileName == null || savePath == null || savePath2 == null) {
+
+        if (dir == null ||
+            fileName == null ||
+            savePath == null ||
+            savePath2 == null) {
           continue;
         }
         double compression = 1.0;
@@ -254,17 +307,15 @@ class _MyHomePageState extends State<MyHomePage> {
           final aStr = compressionString.replaceAll(new RegExp(r'[^0-9.]'), '');
           compression = double.tryParse(aStr) ?? 1.0;
         }
-        final imageScale = double.tryParse(imageScaleString ?? '');
 
         params.add(
           Params(
-            dir: dir,
-            filename: fileName,
-            compression: compression,
-            savePath: savePath,
-            savePath2: savePath2,
-            imageScale: imageScale ?? 1.0,
-          ),
+              dir: dir,
+              filename: fileName,
+              compression: compression,
+              savePath: savePath,
+              savePath2: savePath2,
+              data: row),
         );
         print('$dir $fileName $compression $savePath $savePath2');
       }
@@ -283,7 +334,7 @@ class Params {
   String savePath2;
   String? error;
   String? message;
-  double imageScale;
+  List<Data?> data;
 
   Params({
     required this.dir,
@@ -291,7 +342,7 @@ class Params {
     required this.compression,
     required this.savePath,
     required this.savePath2,
-    this.imageScale = 1.0,
+    required this.data,
   }) {
     this.dir = dir.replaceAll('\\', '/');
     this.savePath = savePath.replaceAll('\\', '/');
