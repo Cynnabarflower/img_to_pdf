@@ -1,3 +1,4 @@
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -34,6 +35,8 @@ class MyApp extends StatelessWidget {
 List<String> oprosFiles = ['opros.jpg'];
 String filename = 'images.pdf';
 String message = '';
+int maxImageWidth = 720;
+int maxFileSizeKb = 1000;
 
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key});
@@ -88,31 +91,68 @@ class _MyHomePageState extends State<MyHomePage> {
             Padding(
               padding: const EdgeInsets.all(32.0),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.start,
                 children: [
-                  MaterialButton(
-                    onPressed: () async {
-                      final result = await FilePicker.platform.pickFiles(
-                        dialogTitle: 'Excel file',
-                        withData: true,
-                      );
-                      if (result == null) {
-                        return;
-                      }
-                      params = [];
-                      var bytes = result.files.first.bytes!;
-                      return readFile(bytes).onError((error, stackTrace) {
-                        print(error);
-                        print(stackTrace);
-                        setState(() {
-                          loading = false;
-                        });
-                      });
-                    },
-                    child: Text('Выбрать excel файл'),
+                  Expanded(
+                    flex: 8,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      children: [
+                        MaterialButton(
+                          onPressed: () async {
+                            final result = await FilePicker.platform.pickFiles(
+                              dialogTitle: 'Excel file',
+                              withData: true,
+                            );
+                            if (result == null) {
+                              return;
+                            }
+                            params = [];
+                            var bytes = result.files.first.bytes!;
+                            return readFile(bytes).onError((error, stackTrace) {
+                              print(error);
+                              print(stackTrace);
+                              setState(() {
+                                loading = false;
+                              });
+                            });
+                          },
+                          child: Text('Выбрать excel файл'),
+                        ),
+                        MaterialButton(
+                          onPressed: process,
+                          child: Text('Запуск'),
+                        ),
+                      ],
+                    ),
                   ),
-                  MaterialButton(
-                    onPressed: process,
-                    child: Text('Запуск'),
+                  Container(
+                    width: 200,
+                    child: TextField(
+                      decoration: InputDecoration(labelText: 'Макс ширина изображения'),
+                      controller:
+                          TextEditingController(text: maxImageWidth.toString()),
+                      onChanged: (v) {
+                        maxImageWidth = int.tryParse(v) ?? maxImageWidth;
+                        if (maxImageWidth <= 0) {
+                          maxImageWidth = 99999;
+                        }
+                      },
+                    ),
+                  ),
+                  Container(
+                    width: 200,
+                    child: TextField(
+                      decoration: InputDecoration(labelText: 'Макс размер файла КБ'),
+                      controller:
+                          TextEditingController(text: maxFileSizeKb.toString()),
+                      onChanged: (v) {
+                        maxFileSizeKb = int.tryParse(v) ?? maxImageWidth;
+                        if (maxFileSizeKb <= 0) {
+                          maxFileSizeKb = 1000;
+                        }
+                      },
+                    ),
                   ),
                 ],
               ),
@@ -128,12 +168,19 @@ class _MyHomePageState extends State<MyHomePage> {
     final pdf = pw.Document();
     for (final image in images) {
       Future<pw.Page> _imagePage() async {
-        final im = await imglib.decodeJpg(image.readAsBytesSync());
+        var im = (await imglib.decodeJpg(image.readAsBytesSync()))!;
+        if (im.width > maxImageWidth && im.width < im.height) {
+          im = imglib.copyResize(im, width: maxImageWidth);
+        } else if (im.height > maxImageWidth && im.height < im.width) {
+          im = imglib.copyResize(im, height: maxImageWidth);
+        }
         return pw.Page(
           build: (pw.Context context) {
+            var bytes =
+                imglib.encodeJpg(im, quality: (100 * compression).floor());
             return pw.Image(
               pw.MemoryImage(
-                imglib.encodeJpg(im!, quality: (100 * compression).floor()),
+                bytes,
               ),
               width: im.width.toDouble(),
               height: im.height.toDouble(),
@@ -168,7 +215,17 @@ class _MyHomePageState extends State<MyHomePage> {
               element.copySync(
                 '${param.savePath2}/${element.path.replaceAll('\\', '/').split('/').last}',
               );
-            } else if (imagePaths.any((path) => element.path.endsWith(path))) {
+            } else if (imagePaths
+                .any((path) => element.path.toLowerCase().endsWith(path))) {
+              if (element.path.replaceAll('\\', '/').split('/').last == 'VD.jpg') {
+                if (!Directory(param.savePath).existsSync()) {
+                  Directory(param.savePath).createSync(recursive: true);
+                }
+                element.copySync(
+                  '${param.savePath}/${element.path.replaceAll('\\', '/').split('/').last}',
+                );
+                return;
+              }
               images.add(element);
             } else {
               otherFiles.add(element);
@@ -191,15 +248,28 @@ class _MyHomePageState extends State<MyHomePage> {
           pw.Document doc =
               await _createDocument(images.take(n), param.compression);
           var bytes = await doc.save();
-          if (bytes.length < 1000000) {
+          if (bytes.length < maxFileSizeKb*1000) {
             n = min(10, images.length);
             doc = await _createDocument(images.take(n), param.compression);
             bytes = await doc.save();
           }
-          while (bytes.length > 1000000 && n > 0) {
+          var err = false;
+          while (bytes.length > maxFileSizeKb*1000) {
             n--;
+            if (n < 0) {
+              err = true;
+              break;
+            }
             doc = await _createDocument(images.take(n), param.compression);
             bytes = await doc.save();
+          }
+          if (err) {
+            setState(() {
+              param.message =
+              'Ошибка попробуйте уменьшить качество изображений или максимальный размер';
+            });
+            docIndex++;
+            break;
           }
           images = images.sublist(n);
           setState(() {
